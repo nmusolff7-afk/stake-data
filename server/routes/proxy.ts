@@ -89,6 +89,11 @@ const QUERY_TEMPLATES: Record<string, { name: string; description: string; query
   },
 }
 
+// GET /api/proxy/test — verify this route is reachable
+router.get('/test', (_req: Request, res: Response) => {
+  res.json({ status: 'proxy route reachable' })
+})
+
 // GET /api/proxy/queries
 router.get('/queries', (_req: Request, res: Response) => {
   res.json(QUERY_TEMPLATES)
@@ -98,6 +103,8 @@ router.get('/queries', (_req: Request, res: Response) => {
 router.post('/graphql', proxyLimiter, (req: Request, res: Response) => {
   const accessToken = req.headers['x-access-token'] as string | undefined
   const body = req.body as Record<string, unknown>
+
+  console.log(`[proxy] ${new Date().toISOString()} POST /api/proxy/graphql hit — token present: ${!!accessToken}`)
 
   if (!accessToken) {
     res.status(401).json({ error: 'Missing x-access-token header. Provide your own Stake API token.' })
@@ -124,26 +131,43 @@ router.post('/graphql', proxyLimiter, (req: Request, res: Response) => {
     },
   }
 
-  console.log(`[proxy] ${new Date().toISOString()} GraphQL request (token: ...${accessToken.slice(-4)})`)
+  console.log(`[proxy] forwarding to ${STAKE_API} (token: ...${accessToken.slice(-4)})`)
+
+  let responded = false
 
   const proxyReq = https.request(options, proxyRes => {
     let data = ''
     proxyRes.on('data', chunk => { data += chunk })
     proxyRes.on('end', () => {
-      res.status(proxyRes.statusCode || 200)
-      res.set('Content-Type', 'application/json')
-      res.send(data)
+      if (responded) return
+      responded = true
+      console.log(`[proxy] upstream responded ${proxyRes.statusCode}, body length ${data.length}`)
+      // Always return JSON — if upstream sends non-JSON, wrap it
+      try {
+        JSON.parse(data) // validate it's parseable
+        res.status(proxyRes.statusCode || 200).set('Content-Type', 'application/json').send(data)
+      } catch {
+        res.status(proxyRes.statusCode || 502).json({
+          error: 'Upstream returned non-JSON response',
+          status: proxyRes.statusCode,
+          body: data.slice(0, 500),
+        })
+      }
     })
   })
 
   proxyReq.on('error', err => {
-    console.error('[proxy] error:', err.message)
+    if (responded) return
+    responded = true
+    console.error('[proxy] upstream error:', err.message)
     res.status(502).json({ error: 'Upstream request failed', detail: err.message })
   })
 
   proxyReq.setTimeout(15000, () => {
+    if (responded) return
+    responded = true
     proxyReq.destroy()
-    res.status(504).json({ error: 'Upstream request timed out' })
+    res.status(504).json({ error: 'Upstream request timed out after 15s' })
   })
 
   proxyReq.write(payload)
