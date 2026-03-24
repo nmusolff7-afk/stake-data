@@ -12,7 +12,8 @@ const proxyLimiter = rateLimit({
   legacyHeaders: false,
 })
 
-const STAKE_API = 'https://api.stake.com/graphql'
+const STAKE_HOST = process.env.STAKE_API_HOST || 'api.stake.us'
+const STAKE_API = `https://${STAKE_HOST}/graphql`
 
 const QUERY_TEMPLATES: Record<string, { name: string; description: string; query: string; variables?: Record<string, unknown> }> = {
   bet_history: {
@@ -36,19 +37,50 @@ const QUERY_TEMPLATES: Record<string, { name: string; description: string; query
   },
   seed_history: {
     name: 'Seed History',
-    description: 'Fetch revealed server seeds for the authenticated user',
+    description: 'Fetch revealed server seeds using seedHistory field',
     query: `query SeedHistory($limit: Int) {
   user {
-    serverSeeds(limit: $limit) {
-      seed
-      hash
+    seedHistory(limit: $limit) {
+      serverSeed
+      serverSeedHash
+      clientSeed
       nonce
       createdAt
-      rotatedAt
     }
   }
 }`,
     variables: { limit: 100 },
+  },
+  seed_history_alt: {
+    name: 'Seed History (alt)',
+    description: 'Fetch seeds via activeSeedPair + previousSeeds fields',
+    query: `query SeedHistoryAlt($limit: Int) {
+  user {
+    activeSeedPair {
+      serverSeedHash
+      clientSeed
+      nonce
+    }
+    previousSeeds(limit: $limit) {
+      serverSeed
+      serverSeedHash
+      clientSeed
+      nonce
+      createdAt
+    }
+  }
+}`,
+    variables: { limit: 100 },
+  },
+  whoami: {
+    name: 'Who Am I',
+    description: 'Verify authentication — returns user name and email only',
+    query: `query WhoAmI {
+  user {
+    name
+    email
+  }
+}`,
   },
   current_seeds: {
     name: 'Current Seeds',
@@ -104,7 +136,10 @@ router.post('/graphql', proxyLimiter, (req: Request, res: Response) => {
   const accessToken = req.headers['x-access-token'] as string | undefined
   const body = req.body as Record<string, unknown>
 
-  console.log(`[proxy] ${new Date().toISOString()} POST /api/proxy/graphql hit — token present: ${!!accessToken}`)
+  const queryPreview = typeof body.query === 'string'
+    ? body.query.trim().slice(0, 80).replace(/\s+/g, ' ')
+    : '(none)'
+  console.log(`[proxy] ${new Date().toISOString()} POST /api/proxy/graphql — token: ${!!accessToken} — query: ${queryPreview}`)
 
   if (!accessToken) {
     res.status(401).json({ error: 'Missing x-access-token header. Provide your own Stake API token.' })
@@ -131,7 +166,7 @@ router.post('/graphql', proxyLimiter, (req: Request, res: Response) => {
     },
   }
 
-  console.log(`[proxy] forwarding to ${STAKE_API} (token: ...${accessToken.slice(-4)})`)
+  console.log(`[proxy] forwarding to ${STAKE_API} (token: ...${accessToken.slice(-4)}) body_bytes: ${Buffer.byteLength(payload)}`)
 
   let responded = false
 
