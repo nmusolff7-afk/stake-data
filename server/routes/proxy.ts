@@ -137,13 +137,15 @@ router.get('/queries', (_req: Request, res: Response) => {
 
 // POST /api/proxy/graphql
 router.post('/graphql', proxyLimiter, (req: Request, res: Response) => {
-  const accessToken = req.headers['x-access-token'] as string | undefined
   const body = req.body as Record<string, unknown>
+  const accessToken = (req.headers['x-access-token'] as string | undefined)
+    || (body.token as string | undefined)
 
   const queryPreview = typeof body.query === 'string'
     ? body.query.trim().slice(0, 80).replace(/\s+/g, ' ')
     : '(none)'
   console.log(`[proxy] ${new Date().toISOString()} POST /api/proxy/graphql — token: ${!!accessToken} — query: ${queryPreview}`)
+  console.log('[proxy] token prefix:', accessToken?.slice(0, 8))
 
   if (!accessToken) {
     res.status(401).json({ error: 'Missing x-access-token header. Provide your own Stake API token.' })
@@ -162,13 +164,17 @@ router.post('/graphql', proxyLimiter, (req: Request, res: Response) => {
     port: 443,
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json',
-      'Content-Length': Buffer.byteLength(payload),
+      'content-type': 'application/json',
+      'content-length': Buffer.byteLength(payload),
       'x-access-token': accessToken,
-      'User-Agent': 'StakeRNGResearchTool/1.0',
-      'origin': `https://${STAKE_HOST}`,
-      'referer': `https://${STAKE_HOST}/`,
-      'accept': 'application/json',
+      'accept': '*/*',
+      'accept-language': 'en-US,en;q=0.9',
+      'origin': 'https://stake.us',
+      'referer': 'https://stake.us/',
+      'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+      'sec-fetch-dest': 'empty',
+      'sec-fetch-mode': 'cors',
+      'sec-fetch-site': 'same-origin',
     },
   }
 
