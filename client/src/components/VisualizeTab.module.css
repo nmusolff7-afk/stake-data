@@ -1,0 +1,66 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.chartCard {
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.chartHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid #21262d;
+}
+
+.chartTitle {
+  font-size: 13px;
+  color: #e6edf3;
+  font-weight: bold;
+  margin-bottom: 3px;
+}
+
+.chartDesc {
+  font-size: 11px;
+  color: #6e7681;
+}
+
+.hint {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid #21262d;
+  color: #6e7681;
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: help;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.chartBody {
+  padding: 14px 16px;
+}
+
+.hintText {
+  padding: 0 16px 12px;
+  font-size: 11px;
+  color: #3c4044;
+  font-style: italic;
+  line-height: 1.5;
+}
+
+.empty {
+  padding: 80px;
+  text-align: center;
+  color: #6e7681;
+  font-size: 13px;
+}

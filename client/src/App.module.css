@@ -1,0 +1,153 @@
+* {
+  box-sizing: border-box;
+}
+
+:global(body) {
+  margin: 0;
+  padding: 0;
+  background: #080c10;
+  color: #e6edf3;
+  font-family: 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+:global(::-webkit-scrollbar) {
+  width: 6px;
+  height: 6px;
+}
+:global(::-webkit-scrollbar-track) {
+  background: #080c10;
+}
+:global(::-webkit-scrollbar-thumb) {
+  background: #21262d;
+  border-radius: 3px;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  border-bottom: 1px solid #21262d;
+  background: #0d1117;
+  flex-shrink: 0;
+}
+
+.headerLeft {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+}
+
+.logo {
+  font-size: 16px;
+  font-weight: bold;
+  color: #e6edf3;
+  letter-spacing: 0.08em;
+}
+
+.subtitle {
+  font-size: 11px;
+  color: #6e7681;
+}
+
+.headerRight {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.metaBadge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  border-radius: 4px;
+  border: 1px solid #21262d;
+  background: #0d1117;
+}
+
+.metaBadge[data-ok='true'] .metaValue {
+  color: #3fb950;
+}
+.metaBadge[data-ok='false'] .metaValue {
+  color: #f85149;
+}
+
+.metaLabel {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #6e7681;
+}
+
+.metaValue {
+  font-size: 13px;
+  font-weight: bold;
+}
+
+.body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.mainArea {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.tabs {
+  display: flex;
+  border-bottom: 1px solid #21262d;
+  background: #0d1117;
+  flex-shrink: 0;
+  padding: 0 16px;
+}
+
+.tab {
+  padding: 12px 18px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: #6e7681;
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  transition: color 0.1s;
+  margin-bottom: -1px;
+}
+.tab:hover {
+  color: #e6edf3;
+}
+.tab[data-active='true'] {
+  color: #e6edf3;
+  border-bottom-color: #58a6ff;
+}
+
+.content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+.sidebar {
+  width: 280px;
+  flex-shrink: 0;
+  border-left: 1px solid #21262d;
+  background: #0d1117;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
