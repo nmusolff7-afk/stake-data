@@ -342,3 +342,27 @@
   color: #6e7681;
   font-style: italic;
 }
+
+.btnYellow {
+  background: #2a2010;
+  color: #e3b341;
+  border: 1px solid #e3b34133;
+  padding: 7px 14px;
+  border-radius: 4px;
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  cursor: pointer;
+}
+.btnYellow:hover { background: #332814; }
+.btnYellow:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.directNote {
+  font-size: 11px;
+  color: #6e7681;
+  margin: 4px 0 12px;
+  line-height: 1.5;
+}
+.directNote code {
+  color: #e3b341;
+  font-family: 'Courier New', monospace;
+}

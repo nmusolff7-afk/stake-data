@@ -57,6 +57,22 @@ export const CollectTab: React.FC<Props> = ({ seeds, onAddSeeds, onClearSeeds, o
   })
   const sseRef = useRef<EventSource | null>(null)
 
+  // Direct browser collection state
+  interface DirectStatus {
+    running: boolean
+    collected: number
+    errors: number
+    latest_seed: string | null
+    status: 'idle' | 'running' | 'complete' | 'error'
+    error_message: string | null
+  }
+  const [directStatus, setDirectStatus] = useState<DirectStatus>({
+    running: false, collected: 0, errors: 0,
+    latest_seed: null, status: 'idle', error_message: null,
+  })
+  const stopDirectRef = useRef(false)
+  const directTimestamps = useRef<number[]>([])
+
   const connectSSE = useCallback(() => {
     if (sseRef.current) {
       sseRef.current.close()
@@ -238,6 +254,151 @@ export const CollectTab: React.FC<Props> = ({ seeds, onAddSeeds, onClearSeeds, o
 
   const reqPerSec = (1000 / delayMs).toFixed(1)
   const effectiveTarget = useCustomTarget ? (parseInt(customTarget) || 0) : autoTarget
+
+  const DIRECT_MUTATION = `mutation RotateSeedPair($seed: String!) {
+  rotateSeedPair(seed: $seed) {
+    clientSeed {
+      user {
+        previousServerSeed { seed seedHash nonce }
+        activeServerSeed { seedHash nonce }
+      }
+    }
+  }
+}`
+
+  const handleStartDirect = async () => {
+    const token = localStorage.getItem('stake_api_token') || apiToken
+    if (!token) { onLog({ type: 'error', message: 'Enter your Stake API token first.' }); return }
+    const target = effectiveTarget
+    if (!target || target < 1) { onLog({ type: 'error', message: 'Set a target count first.' }); return }
+
+    stopDirectRef.current = false
+    directTimestamps.current = []
+    let collected = 0
+    let errors = 0
+    let consecutiveErrors = 0
+
+    setDirectStatus({ running: true, collected: 0, errors: 0, latest_seed: null, status: 'running', error_message: null })
+    onLog({ type: 'info', message: `Direct browser collection started. Target: ${target} seeds.` })
+
+    const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
+
+    while (!stopDirectRef.current && collected < target) {
+      const loopStart = Date.now()
+      const clientSeed = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
+
+      try {
+        const res = await fetch('https://stake.us/_api/graphql', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-access-token': token,
+            'accept': '*/*',
+            'accept-language': 'en-US,en;q=0.9',
+          },
+          body: JSON.stringify({ query: DIRECT_MUTATION, variables: { seed: clientSeed } }),
+        })
+
+        if (res.status === 429) {
+          onLog({ type: 'warn', message: 'Rate limited (429) — pausing 30s.' })
+          setDirectStatus(s => ({ ...s, errors: ++errors }))
+          await sleep(30000)
+          continue
+        }
+
+        const data = await res.json() as {
+          data?: { rotateSeedPair?: { clientSeed?: { user?: { previousServerSeed?: { seed?: string; seedHash?: string; nonce?: number } } } } }
+          errors?: { message: string }[]
+        }
+
+        if (data.errors?.length) throw new Error(data.errors[0].message)
+
+        const prev = data.data?.rotateSeedPair?.clientSeed?.user?.previousServerSeed
+        const seed = prev?.seed
+
+        if (seed && /^[0-9a-f]{64}$/i.test(seed)) {
+          // Save to server
+          await fetch('/api/seeds', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify([{ seed: seed.toLowerCase(), hash: prev?.seedHash, nonce: prev?.nonce, source: 'api' }]),
+          })
+
+          collected++
+          consecutiveErrors = 0
+          directTimestamps.current.push(Date.now())
+
+          setDirectStatus(s => ({
+            ...s,
+            collected,
+            errors,
+            latest_seed: seed.toLowerCase(),
+          }))
+
+          if (collected % 10 === 0) {
+            await onRefreshSeeds()
+          }
+        } else {
+          errors++
+          consecutiveErrors++
+          setDirectStatus(s => ({ ...s, errors }))
+        }
+
+        if (consecutiveErrors >= 10) {
+          throw new Error('10 consecutive errors — stopping.')
+        }
+      } catch (err) {
+        errors++
+        consecutiveErrors++
+        const msg = String(err)
+        setDirectStatus(s => ({ ...s, errors, error_message: msg }))
+        if (consecutiveErrors >= 10) {
+          onLog({ type: 'error', message: `Direct collection stopped: ${msg}` })
+          setDirectStatus(s => ({ ...s, running: false, status: 'error' }))
+          await onRefreshSeeds()
+          return
+        }
+        await sleep(Math.min(1000 * consecutiveErrors, 30000))
+        continue
+      }
+
+      const elapsed = Date.now() - loopStart
+      const wait = Math.max(0, delayMs - elapsed)
+      if (wait > 0) await sleep(wait)
+    }
+
+    setDirectStatus(s => ({
+      ...s,
+      running: false,
+      status: stopDirectRef.current ? 'idle' : 'complete',
+    }))
+    await onRefreshSeeds()
+    onLog({
+      type: stopDirectRef.current ? 'warn' : 'success',
+      message: stopDirectRef.current
+        ? `Direct collection stopped. Collected ${collected} seeds.`
+        : `Direct collection complete. Collected ${collected} seeds.`,
+    })
+  }
+
+  const handleStopDirect = () => {
+    stopDirectRef.current = true
+    onLog({ type: 'warn', message: 'Direct collection stopping after current request...' })
+  }
+
+  // Compute live rate for direct collector
+  const now = Date.now()
+  const recentDirect = directTimestamps.current.filter(t => now - t < 10000)
+  const directRate = (recentDirect.length / 10).toFixed(1)
+  const directEta = directStatus.running && parseFloat(directRate) > 0
+    ? Math.ceil((effectiveTarget - directStatus.collected) / parseFloat(directRate))
+    : null
+  const directEtaStr = directEta !== null ? (directEta < 60 ? `${directEta}s` : `${Math.ceil(directEta / 60)}m`) : '—'
+  const directPct = effectiveTarget > 0 ? Math.min(100, Math.round((directStatus.collected / effectiveTarget) * 100)) : 0
+
+  const directStatusColor: Record<DirectStatus['status'], string> = {
+    idle: '#6e7681', running: '#e3b341', complete: '#58a6ff', error: '#f85149',
+  }
 
   const etaStr = collectorStatus.eta !== null
     ? collectorStatus.eta < 60
@@ -431,6 +592,88 @@ export const CollectTab: React.FC<Props> = ({ seeds, onAddSeeds, onClearSeeds, o
           </button>
           {!apiToken && (
             <span className={styles.tokenHint}>Enter API token in the section above first</span>
+          )}
+        </div>
+      </div>
+
+      {/* ── Direct Browser Collection ── */}
+      <div className={styles.section}>
+        <div className={styles.autoHeader}>
+          <div>
+            <h3 className={styles.sectionTitle}>Direct Browser Collection</h3>
+            <p className={styles.directNote}>
+              Fetches directly from <code>stake.us/_api/graphql</code> — bypasses the server proxy entirely.
+              Use this if the proxy route is blocked or rate-limited.
+              Requires the app to be served from stake.us or CORS to allow it.
+            </p>
+          </div>
+          <span className={styles.statusBadge} style={{ color: directStatusColor[directStatus.status], borderColor: directStatusColor[directStatus.status] + '44' }}>
+            {directStatus.status.toUpperCase()}
+          </span>
+        </div>
+
+        <div className={styles.progressWrap}>
+          <div
+            className={styles.progressBar}
+            style={{
+              width: `${directPct}%`,
+              background: directStatus.status === 'error' ? '#f85149'
+                : directStatus.status === 'complete' ? '#58a6ff' : '#e3b341',
+            }}
+          />
+        </div>
+
+        <div className={styles.statsRow}>
+          <div className={styles.stat}>
+            <span className={styles.statLabel}>Collected</span>
+            <span className={styles.statValue} style={{ color: '#e3b341' }}>
+              {directStatus.collected}{effectiveTarget > 0 ? ` / ${effectiveTarget}` : ''}
+            </span>
+          </div>
+          <div className={styles.stat}>
+            <span className={styles.statLabel}>Errors</span>
+            <span className={styles.statValue} style={{ color: directStatus.errors > 0 ? '#f85149' : '#6e7681' }}>
+              {directStatus.errors}
+            </span>
+          </div>
+          <div className={styles.stat}>
+            <span className={styles.statLabel}>Rate</span>
+            <span className={styles.statValue}>{directRate}/s</span>
+          </div>
+          <div className={styles.stat}>
+            <span className={styles.statLabel}>ETA</span>
+            <span className={styles.statValue}>{directEtaStr}</span>
+          </div>
+        </div>
+
+        {directStatus.latest_seed && (
+          <div className={styles.latestSeed}>
+            <span className={styles.latestLabel}>Latest:</span>
+            <code className={styles.latestValue}>{directStatus.latest_seed.slice(0, 16)}…</code>
+          </div>
+        )}
+
+        {directStatus.error_message && (
+          <div className={styles.errorMsg}>{directStatus.error_message}</div>
+        )}
+
+        <div className={styles.autoActions}>
+          <button
+            className={styles.btnYellow}
+            onClick={handleStartDirect}
+            disabled={directStatus.running || collectorStatus.running || !apiToken}
+          >
+            ▶ Direct Browser Collect
+          </button>
+          <button
+            className={styles.btnDanger}
+            onClick={handleStopDirect}
+            disabled={!directStatus.running}
+          >
+            ■ Stop
+          </button>
+          {!apiToken && (
+            <span className={styles.tokenHint}>Enter API token above first</span>
           )}
         </div>
       </div>
