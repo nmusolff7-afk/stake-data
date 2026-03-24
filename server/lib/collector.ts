@@ -18,10 +18,11 @@ export interface CollectorStatus {
 interface GraphQLResponse {
   data?: {
     rotateSeedPair?: {
-      previousSeedPair?: {
-        serverSeed?: { seed?: string; hash?: string }
-        clientSeed?: { seed?: string }
-        nonce?: number
+      clientSeed?: {
+        user?: {
+          previousServerSeed?: { seed?: string; seedHash?: string; nonce?: number }
+          activeServerSeed?: { seed?: string; seedHash?: string; nonce?: number }
+        }
       }
     }
   }
@@ -29,12 +30,13 @@ interface GraphQLResponse {
 }
 
 const ROTATE_MUTATION = `
-mutation RotateSeedPair($clientSeed: String!) {
-  rotateSeedPair(clientSeed: $clientSeed) {
-    previousSeedPair {
-      serverSeed { seed hash }
-      clientSeed { seed }
-      nonce
+mutation RotateSeedPair($seed: String!) {
+  rotateSeedPair(seed: $seed) {
+    clientSeed {
+      user {
+        activeServerSeed { seed seedHash nonce }
+        previousServerSeed { seed seedHash nonce }
+      }
     }
   }
 }
@@ -54,16 +56,20 @@ function makeClientSeed(): string {
 
 function graphqlRequest(token: string, clientSeed: string): Promise<GraphQLResponse> {
   return new Promise((resolve, reject) => {
-    const body = JSON.stringify({ query: ROTATE_MUTATION, variables: { clientSeed } })
+    const body = JSON.stringify({ query: ROTATE_MUTATION, variables: { seed: clientSeed } })
     const options: https.RequestOptions = {
-      hostname: 'api.stake.com',
-      path: '/graphql',
+      hostname: 'stake.us',
+      path: '/_api/graphql',
+      port: 443,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(body),
         'x-access-token': token,
         'User-Agent': 'StakeRNGResearchTool/1.0',
+        'origin': 'https://stake.us',
+        'referer': 'https://stake.us/',
+        'accept': 'application/json',
       },
     }
 
@@ -160,14 +166,14 @@ export class StakeCollector extends EventEmitter {
           throw new Error(response.errors[0].message)
         }
 
-        const prev = response.data?.rotateSeedPair?.previousSeedPair
-        const seed = prev?.serverSeed?.seed
+        const prev = response.data?.rotateSeedPair?.clientSeed?.user?.previousServerSeed
+        const seed = prev?.seed
 
         if (seed && /^[0-9a-f]{64}$/i.test(seed)) {
           this._buffer.push({
             seed: seed.toLowerCase(),
-            hash: prev?.serverSeed?.hash,
-            clientSeed: prev?.clientSeed?.seed,
+            hash: prev?.seedHash,
+            clientSeed: clientSeed,
             nonce: prev?.nonce,
           })
           this._collected++

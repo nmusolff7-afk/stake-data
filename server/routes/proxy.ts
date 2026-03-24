@@ -12,8 +12,9 @@ const proxyLimiter = rateLimit({
   legacyHeaders: false,
 })
 
-const STAKE_HOST = process.env.STAKE_API_HOST || 'api.stake.us'
-const STAKE_API = `https://${STAKE_HOST}/graphql`
+const STAKE_HOST = process.env.STAKE_API_HOST || 'stake.us'
+const STAKE_PATH = process.env.STAKE_API_PATH || '/_api/graphql'
+const STAKE_API = `https://${STAKE_HOST}${STAKE_PATH}`
 
 const QUERY_TEMPLATES: Record<string, { name: string; description: string; query: string; variables?: Record<string, unknown> }> = {
   bet_history: {
@@ -87,22 +88,25 @@ const QUERY_TEMPLATES: Record<string, { name: string; description: string; query
     description: 'Fetch current active seeds',
     query: `query CurrentSeeds {
   user {
-    activeServerSeed { hash nonce }
+    activeServerSeed { seed seedHash nonce }
     activeClientSeed { seed }
   }
 }`,
   },
-  rotate_seed: {
-    name: 'Rotate Seed',
-    description: 'Rotate to new server seed (mutation)',
-    query: `mutation RotateSeed($clientSeed: String!) {
-  rotateSeed(clientSeed: $clientSeed) {
-    serverSeed { seed hash }
-    clientSeed { seed }
-    nonce
+  rotate_and_collect: {
+    name: 'Rotate & Collect',
+    description: 'Rotate seed pair — extracts previousServerSeed as revealed seed',
+    query: `mutation RotateSeedPair($seed: String!) {
+  rotateSeedPair(seed: $seed) {
+    clientSeed {
+      user {
+        activeServerSeed { seed seedHash nonce }
+        previousServerSeed { seed seedHash nonce }
+      }
+    }
   }
 }`,
-    variables: { clientSeed: '<your-client-seed>' },
+    variables: { seed: '<your-client-seed>' },
   },
   verify_bet: {
     name: 'Verify Bet',
@@ -152,19 +156,18 @@ router.post('/graphql', proxyLimiter, (req: Request, res: Response) => {
   }
 
   const payload = JSON.stringify(body)
-  const url = new URL(STAKE_API)
-
   const options = {
-    hostname: url.hostname,
-    path: url.pathname,
+    hostname: STAKE_HOST,
+    path: STAKE_PATH,
+    port: 443,
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Content-Length': Buffer.byteLength(payload),
       'x-access-token': accessToken,
       'User-Agent': 'StakeRNGResearchTool/1.0',
-      'origin': 'https://stake.us',
-      'referer': 'https://stake.us/',
+      'origin': `https://${STAKE_HOST}`,
+      'referer': `https://${STAKE_HOST}/`,
       'accept': 'application/json',
     },
   }
