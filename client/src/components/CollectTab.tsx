@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react'
+import React, { useState, useRef, useEffect, useCallback } from 'react'
 import { SeedEntry, LogEntry } from '../types'
 import { SeedTable } from './SeedTable'
 import styles from './CollectTab.module.css'
@@ -16,26 +16,107 @@ const DEMO_SEEDS = [
   'fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fe',
 ]
 
+const TARGET_PRESETS = [100, 500, 1000, 5000]
+
+interface CollectorStatus {
+  running: boolean
+  collected: number
+  errors: number
+  rate: number
+  eta: number | null
+  target: number
+  progress_pct: number
+  latest_seed: string | null
+  status: 'idle' | 'running' | 'complete' | 'error'
+  error_message: string | null
+}
+
 interface Props {
   seeds: SeedEntry[]
   onAddSeeds: (seeds: string[] | Partial<SeedEntry>[]) => Promise<{ added: number; duplicates: number; invalid: number }>
   onClearSeeds: () => Promise<void>
   onLog: (entry: Omit<LogEntry, 'id' | 'ts'>) => void
+  onRefreshSeeds: () => Promise<void>
 }
 
-export const CollectTab: React.FC<Props> = ({ seeds, onAddSeeds, onClearSeeds, onLog }) => {
+export const CollectTab: React.FC<Props> = ({ seeds, onAddSeeds, onClearSeeds, onLog, onRefreshSeeds }) => {
   const [pasteValue, setPasteValue] = useState('')
   const [apiToken, setApiToken] = useState(() => localStorage.getItem('stake_api_token') || '')
   const [queryType, setQueryType] = useState('seed_history')
   const [apiLoading, setApiLoading] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
+  // Automated collector state
+  const [autoTarget, setAutoTarget] = useState<number>(100)
+  const [customTarget, setCustomTarget] = useState('')
+  const [useCustomTarget, setUseCustomTarget] = useState(false)
+  const [delayMs, setDelayMs] = useState(700)
+  const [collectorStatus, setCollectorStatus] = useState<CollectorStatus>({
+    running: false, collected: 0, errors: 0, rate: 0, eta: null,
+    target: 0, progress_pct: 0, latest_seed: null, status: 'idle', error_message: null,
+  })
+  const sseRef = useRef<EventSource | null>(null)
+
+  const connectSSE = useCallback(() => {
+    if (sseRef.current) {
+      sseRef.current.close()
+    }
+    const es = new EventSource('/api/collector/stream')
+
+    const handleEvent = (e: MessageEvent) => {
+      const data = JSON.parse(e.data) as CollectorStatus
+      setCollectorStatus(data)
+    }
+
+    es.addEventListener('status', handleEvent)
+    es.addEventListener('progress', handleEvent)
+    es.addEventListener('heartbeat', handleEvent)
+    es.addEventListener('start', handleEvent)
+    es.addEventListener('done', (e: MessageEvent) => {
+      const data = JSON.parse(e.data) as CollectorStatus
+      setCollectorStatus(data)
+      onRefreshSeeds()
+      if (data.status === 'complete') {
+        onLog({ type: 'success', message: `Collection complete. Collected ${data.collected} seeds.` })
+      }
+    })
+    es.addEventListener('warn', (e: MessageEvent) => {
+      const d = JSON.parse(e.data) as { message: string }
+      onLog({ type: 'warn', message: d.message })
+    })
+    es.addEventListener('error', (e: MessageEvent) => {
+      try {
+        const d = JSON.parse((e as MessageEvent).data) as { message: string }
+        onLog({ type: 'error', message: `Collector error: ${d.message}` })
+      } catch {
+        // SSE connection error — reconnect
+        setTimeout(connectSSE, 3000)
+      }
+    })
+
+    es.onerror = () => {
+      // Auto-reconnect on connection drop
+      setTimeout(connectSSE, 3000)
+    }
+
+    sseRef.current = es
+  }, [onLog, onRefreshSeeds])
+
+  useEffect(() => {
+    connectSSE()
+    return () => { sseRef.current?.close() }
+  }, [connectSSE])
+
+  // Refresh seed list periodically while collector is running
+  useEffect(() => {
+    if (!collectorStatus.running) return
+    const interval = setInterval(onRefreshSeeds, 5000)
+    return () => clearInterval(interval)
+  }, [collectorStatus.running, onRefreshSeeds])
+
   const handleParse = async () => {
     const lines = pasteValue.split('\n').map(l => l.trim()).filter(Boolean)
-    if (lines.length === 0) {
-      onLog({ type: 'warn', message: 'No seeds to parse.' })
-      return
-    }
+    if (lines.length === 0) { onLog({ type: 'warn', message: 'No seeds to parse.' }); return }
     try {
       const result = await onAddSeeds(lines)
       onLog({ type: 'success', message: `Added ${result.added} seeds. Duplicates: ${result.duplicates}. Invalid: ${result.invalid}.` })
@@ -54,9 +135,7 @@ export const CollectTab: React.FC<Props> = ({ seeds, onAddSeeds, onClearSeeds, o
     const blob = new Blob([JSON.stringify(seeds, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
-    a.href = url
-    a.download = 'seeds.json'
-    a.click()
+    a.href = url; a.download = 'seeds.json'; a.click()
     URL.revokeObjectURL(url)
     onLog({ type: 'success', message: `Exported ${seeds.length} seeds.` })
   }
@@ -87,10 +166,7 @@ export const CollectTab: React.FC<Props> = ({ seeds, onAddSeeds, onClearSeeds, o
   }
 
   const handleApiQuery = async () => {
-    if (!apiToken) {
-      onLog({ type: 'error', message: 'Enter your Stake API token first.' })
-      return
-    }
+    if (!apiToken) { onLog({ type: 'error', message: 'Enter your Stake API token first.' }); return }
     setApiLoading(true)
     onLog({ type: 'info', message: `Running ${queryType} query via proxy...` })
     try {
@@ -98,30 +174,21 @@ export const CollectTab: React.FC<Props> = ({ seeds, onAddSeeds, onClearSeeds, o
       const templates = await queriesRes.json() as Record<string, { query: string; variables?: Record<string, unknown> }>
       const template = templates[queryType]
       if (!template) throw new Error('Unknown query type')
-
       const res = await fetch('/api/proxy/graphql', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-access-token': apiToken,
-        },
+        headers: { 'Content-Type': 'application/json', 'x-access-token': apiToken },
         body: JSON.stringify({ query: template.query, variables: template.variables }),
       })
       const data = await res.json() as Record<string, unknown>
-
-      // Extract seeds from response
       const extracted: string[] = []
       const extractSeeds = (obj: unknown): void => {
         if (!obj || typeof obj !== 'object') return
         if (Array.isArray(obj)) { obj.forEach(extractSeeds); return }
         const o = obj as Record<string, unknown>
-        if (typeof o.seed === 'string' && /^[0-9a-f]{64}$/i.test(o.seed)) {
-          extracted.push(o.seed)
-        }
+        if (typeof o.seed === 'string' && /^[0-9a-f]{64}$/i.test(o.seed)) extracted.push(o.seed)
         Object.values(o).forEach(extractSeeds)
       }
       extractSeeds(data)
-
       if (extracted.length > 0) {
         const result = await onAddSeeds(extracted)
         onLog({ type: 'success', message: `API query complete. Extracted ${extracted.length} seeds. Added: ${result.added}, duplicates: ${result.duplicates}.` })
@@ -141,8 +208,53 @@ export const CollectTab: React.FC<Props> = ({ seeds, onAddSeeds, onClearSeeds, o
     else localStorage.removeItem('stake_api_token')
   }
 
+  const handleStartCollector = async () => {
+    if (!apiToken) { onLog({ type: 'error', message: 'Enter your Stake API token first.' }); return }
+    const target = useCustomTarget ? parseInt(customTarget) : autoTarget
+    if (!target || target < 1) { onLog({ type: 'error', message: 'Invalid target count.' }); return }
+
+    try {
+      const res = await fetch('/api/collector/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: apiToken, target, delayMs }),
+      })
+      const data = await res.json() as { error?: string }
+      if (!res.ok) {
+        onLog({ type: 'error', message: data.error || 'Failed to start collector.' })
+        return
+      }
+      onLog({ type: 'info', message: `Automated collection started. Target: ${target} seeds @ ${(1000 / delayMs).toFixed(1)} req/s` })
+    } catch (err) {
+      onLog({ type: 'error', message: `Start failed: ${String(err)}` })
+    }
+  }
+
+  const handleStopCollector = async () => {
+    await fetch('/api/collector/stop', { method: 'POST' })
+    onLog({ type: 'warn', message: 'Collection stopped by user.' })
+    await onRefreshSeeds()
+  }
+
+  const reqPerSec = (1000 / delayMs).toFixed(1)
+  const effectiveTarget = useCustomTarget ? (parseInt(customTarget) || 0) : autoTarget
+
+  const etaStr = collectorStatus.eta !== null
+    ? collectorStatus.eta < 60
+      ? `${collectorStatus.eta}s`
+      : `${Math.ceil(collectorStatus.eta / 60)}m`
+    : '—'
+
+  const statusColor: Record<CollectorStatus['status'], string> = {
+    idle: '#6e7681',
+    running: '#3fb950',
+    complete: '#58a6ff',
+    error: '#f85149',
+  }
+
   return (
     <div className={styles.root}>
+      {/* ── Paste Seeds ── */}
       <div className={styles.section}>
         <h3 className={styles.sectionTitle}>Paste Seeds</h3>
         <textarea
@@ -162,6 +274,7 @@ export const CollectTab: React.FC<Props> = ({ seeds, onAddSeeds, onClearSeeds, o
         </div>
       </div>
 
+      {/* ── Manual API Query ── */}
       <div className={styles.section}>
         <h3 className={styles.sectionTitle}>Collect via Stake API</h3>
         <div className={styles.apiRow}>
@@ -172,11 +285,7 @@ export const CollectTab: React.FC<Props> = ({ seeds, onAddSeeds, onClearSeeds, o
             value={apiToken}
             onChange={e => handleTokenChange(e.target.value)}
           />
-          <select
-            className={styles.select}
-            value={queryType}
-            onChange={e => setQueryType(e.target.value)}
-          >
+          <select className={styles.select} value={queryType} onChange={e => setQueryType(e.target.value)}>
             <option value="seed_history">Seed History</option>
             <option value="bet_history">Bet History</option>
             <option value="current_seeds">Current Seeds</option>
@@ -190,6 +299,143 @@ export const CollectTab: React.FC<Props> = ({ seeds, onAddSeeds, onClearSeeds, o
         </p>
       </div>
 
+      {/* ── Automated Collection ── */}
+      <div className={styles.section}>
+        <div className={styles.autoHeader}>
+          <h3 className={styles.sectionTitle}>Automated Collection</h3>
+          <span className={styles.statusBadge} style={{ color: statusColor[collectorStatus.status], borderColor: statusColor[collectorStatus.status] + '44' }}>
+            {collectorStatus.status.toUpperCase()}
+          </span>
+        </div>
+
+        <div className={styles.autoConfig}>
+          <div className={styles.configGroup}>
+            <span className={styles.configLabel}>Target</span>
+            <div className={styles.targetRow}>
+              {TARGET_PRESETS.map(t => (
+                <button
+                  key={t}
+                  className={styles.presetBtn}
+                  data-active={!useCustomTarget && autoTarget === t}
+                  onClick={() => { setAutoTarget(t); setUseCustomTarget(false) }}
+                  disabled={collectorStatus.running}
+                >
+                  {t}
+                </button>
+              ))}
+              <button
+                className={styles.presetBtn}
+                data-active={useCustomTarget}
+                onClick={() => setUseCustomTarget(true)}
+                disabled={collectorStatus.running}
+              >
+                Custom
+              </button>
+              {useCustomTarget && (
+                <input
+                  className={styles.customInput}
+                  type="number"
+                  min={1}
+                  max={10000}
+                  placeholder="e.g. 250"
+                  value={customTarget}
+                  onChange={e => setCustomTarget(e.target.value)}
+                  disabled={collectorStatus.running}
+                />
+              )}
+            </div>
+          </div>
+
+          <div className={styles.configGroup}>
+            <span className={styles.configLabel}>Request rate: <strong>{reqPerSec} req/s</strong></span>
+            <div className={styles.sliderRow}>
+              <span className={styles.sliderLabel}>slow</span>
+              <input
+                type="range"
+                min={334}
+                max={2000}
+                step={50}
+                value={delayMs}
+                onChange={e => setDelayMs(parseInt(e.target.value))}
+                disabled={collectorStatus.running}
+                className={styles.slider}
+              />
+              <span className={styles.sliderLabel}>fast</span>
+            </div>
+            <span className={styles.sliderNote}>{delayMs}ms delay · hard cap 3 req/s</span>
+          </div>
+        </div>
+
+        {/* Progress bar */}
+        <div className={styles.progressWrap}>
+          <div
+            className={styles.progressBar}
+            style={{
+              width: `${collectorStatus.progress_pct}%`,
+              background: collectorStatus.status === 'error' ? '#f85149'
+                : collectorStatus.status === 'complete' ? '#58a6ff' : '#3fb950',
+            }}
+          />
+        </div>
+
+        {/* Stats row */}
+        <div className={styles.statsRow}>
+          <div className={styles.stat}>
+            <span className={styles.statLabel}>Collected</span>
+            <span className={styles.statValue} style={{ color: '#3fb950' }}>
+              {collectorStatus.collected}{effectiveTarget > 0 ? ` / ${effectiveTarget}` : ''}
+            </span>
+          </div>
+          <div className={styles.stat}>
+            <span className={styles.statLabel}>Errors</span>
+            <span className={styles.statValue} style={{ color: collectorStatus.errors > 0 ? '#f85149' : '#6e7681' }}>
+              {collectorStatus.errors}
+            </span>
+          </div>
+          <div className={styles.stat}>
+            <span className={styles.statLabel}>Rate</span>
+            <span className={styles.statValue}>{collectorStatus.rate}/s</span>
+          </div>
+          <div className={styles.stat}>
+            <span className={styles.statLabel}>ETA</span>
+            <span className={styles.statValue}>{etaStr}</span>
+          </div>
+        </div>
+
+        {/* Latest seed preview */}
+        {collectorStatus.latest_seed && (
+          <div className={styles.latestSeed}>
+            <span className={styles.latestLabel}>Latest:</span>
+            <code className={styles.latestValue}>{collectorStatus.latest_seed.slice(0, 16)}…</code>
+          </div>
+        )}
+
+        {collectorStatus.error_message && (
+          <div className={styles.errorMsg}>{collectorStatus.error_message}</div>
+        )}
+
+        <div className={styles.autoActions}>
+          <button
+            className={styles.btn}
+            onClick={handleStartCollector}
+            disabled={collectorStatus.running || !apiToken}
+          >
+            ▶ Start
+          </button>
+          <button
+            className={styles.btnDanger}
+            onClick={handleStopCollector}
+            disabled={!collectorStatus.running}
+          >
+            ■ Stop
+          </button>
+          {!apiToken && (
+            <span className={styles.tokenHint}>Enter API token in the section above first</span>
+          )}
+        </div>
+      </div>
+
+      {/* ── Seed Corpus ── */}
       <div className={styles.section}>
         <div className={styles.corpusHeader}>
           <h3 className={styles.sectionTitle}>Seed Corpus</h3>

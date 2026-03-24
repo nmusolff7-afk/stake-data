@@ -83,6 +83,7 @@ const App: React.FC = () => {
                 onAddSeeds={addSeeds}
                 onClearSeeds={clearSeeds}
                 onLog={log}
+                onRefreshSeeds={fetchSeeds}
               />
             )}
             {activeTab === 'analyze' && (

@@ -7,6 +7,7 @@ import seedsRouter from './routes/seeds'
 import analysisRouter from './routes/analysis'
 import verifyRouter from './routes/verify'
 import proxyRouter from './routes/proxy'
+import collectorRouter from './routes/collector'
 
 const app = express()
 const PORT = parseInt(process.env.PORT || '3001', 10)
@@ -27,6 +28,7 @@ app.use('/api/seeds', seedsRouter)
 app.use('/api/analysis', analysisRouter)
 app.use('/api/verify', verifyRouter)
 app.use('/api/proxy', proxyRouter)
+app.use('/api/collector', collectorRouter)
 
 app.get('/api/health', (_req, res) => {
   const stats = getSeedStats()
