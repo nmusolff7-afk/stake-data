@@ -163,6 +163,9 @@ router.post('/graphql', proxyLimiter, (req: Request, res: Response) => {
       'Content-Length': Buffer.byteLength(payload),
       'x-access-token': accessToken,
       'User-Agent': 'StakeRNGResearchTool/1.0',
+      'origin': 'https://stake.us',
+      'referer': 'https://stake.us/',
+      'accept': 'application/json',
     },
   }
 
